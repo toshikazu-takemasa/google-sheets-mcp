@@ -28,20 +28,30 @@ export class SheetsClient {
     try {
       let auth: GoogleAuth;
       
-      if (this.config.credentials) {
+      // Google Cloud SDKの認証情報を優先的に使用
+      if (process.env.GOOGLE_CLOUD_PROJECT) {
+        console.error(`Using Google Cloud SDK authentication for project: ${process.env.GOOGLE_CLOUD_PROJECT}`);
+        auth = new GoogleAuth({
+          scopes: this.config.scopes,
+          projectId: process.env.GOOGLE_CLOUD_PROJECT,
+        });
+      } else if (this.config.credentials) {
         // サービスアカウントキーを直接使用
+        console.error("Using service account credentials from environment variable");
         auth = new GoogleAuth({
           credentials: this.config.credentials,
           scopes: this.config.scopes,
         });
       } else if (this.config.keyFile) {
         // キーファイルを使用
+        console.error(`Using service account key file: ${this.config.keyFile}`);
         auth = new GoogleAuth({
           keyFile: this.config.keyFile,
           scopes: this.config.scopes,
         });
       } else {
         // デフォルトの認証を使用
+        console.error("Using default Google Cloud authentication");
         auth = new GoogleAuth({
           scopes: this.config.scopes,
         });

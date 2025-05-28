@@ -23,12 +23,25 @@ Google Sheetsを操作するためのMCP（Model Context Protocol）サーバー
 
 以下のいずれかの方法で認証を設定してください：
 
-#### 方法1: 環境変数でサービスアカウントキーを設定
+#### 方法1: Google Cloud SDK認証（推奨）
+Google Cloud SDKがインストールされている場合、以下の環境変数を設定することで、APPDATAディレクトリに保存された認証情報を自動的に使用します：
+
+```bash
+# Windows
+set GOOGLE_CLOUD_PROJECT=sprocket-op
+
+# Linux/Mac
+export GOOGLE_CLOUD_PROJECT=sprocket-op
+```
+
+この方法では、`gcloud auth application-default login` で設定された認証情報が自動的に使用されます。
+
+#### 方法2: 環境変数でサービスアカウントキーを設定
 ```bash
 export GOOGLE_CREDENTIALS='{"type":"service_account","project_id":"your-project",...}'
 ```
 
-#### 方法2: キーファイルのパスを指定
+#### 方法3: キーファイルのパスを指定
 ```bash
 export GOOGLE_KEY_FILE="/path/to/service-account-key.json"
 ```
