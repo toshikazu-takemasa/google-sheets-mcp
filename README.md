@@ -75,12 +75,55 @@ npm run dev
 
 ## Docker での実行
 
+### GitHub Container Registry からのイメージ使用（推奨）
+
+```bash
+# 最新版のイメージを取得して実行
+docker run -e GOOGLE_CREDENTIALS='{"type":"service_account",...}' -p 3000:3000 ghcr.io/toshikazu-takemasa/google-sheets-mcp:latest
+
+# 特定のバージョンを指定
+docker run -e GOOGLE_CREDENTIALS='{"type":"service_account",...}' -p 3000:3000 ghcr.io/toshikazu-takemasa/google-sheets-mcp:v1.0.0
+
+# Google Cloud SDK認証を使用する場合（認証情報ファイルをマウント）
+# Windows
+docker run -v "%APPDATA%\gcloud:/root/.config/gcloud" -e GOOGLE_CLOUD_PROJECT=your-project-id -p 3000:3000 ghcr.io/toshikazu-takemasa/google-sheets-mcp:latest
+
+# Linux/Mac
+docker run -v "$HOME/.config/gcloud:/root/.config/gcloud" -e GOOGLE_CLOUD_PROJECT=your-project-id -p 3000:3000 ghcr.io/toshikazu-takemasa/google-sheets-mcp:latest
+```
+
+### ローカルでのビルドと実行
+
 ```bash
 # ビルド
 docker build -t google-sheets-mcp .
 
 # 実行（環境変数で認証情報を渡す）
 docker run -e GOOGLE_CREDENTIALS='{"type":"service_account",...}' -p 3000:3000 google-sheets-mcp
+```
+
+### Docker Compose での実行
+
+`docker-compose.yml` ファイルを作成：
+
+```yaml
+version: '3.8'
+services:
+  google-sheets-mcp:
+    image: ghcr.io/toshikazu-takemasa/google-sheets-mcp:latest
+    ports:
+      - "3000:3000"
+    environment:
+      - GOOGLE_CREDENTIALS=${GOOGLE_CREDENTIALS}
+      - GOOGLE_CLOUD_PROJECT=${GOOGLE_CLOUD_PROJECT}
+    volumes:
+      # Google Cloud SDK認証を使用する場合
+      - ~/.config/gcloud:/root/.config/gcloud:ro
+```
+
+実行：
+```bash
+docker-compose up
 ```
 
 ## 利用可能なツール

@@ -1,0 +1,38 @@
+version: '3.8'
+
+services:
+  google-sheets-mcp:
+    image: ghcr.io/toshikazu-takemasa/google-sheets-mcp:latest
+    ports:
+      - "3000:3000"
+    environment:
+      # 環境変数でGoogle認証情報を設定
+      - GOOGLE_CREDENTIALS=${GOOGLE_CREDENTIALS}
+      - GOOGLE_CLOUD_PROJECT=${GOOGLE_CLOUD_PROJECT}
+      - GOOGLE_KEY_FILE=${GOOGLE_KEY_FILE}
+    volumes:
+      # Google Cloud SDK認証ファイルをマウント（オプション）
+      - ~/.config/gcloud:/root/.config/gcloud:ro
+      # サービスアカウントキーファイルをマウントする場合（オプション）
+      # - ./path/to/service-account-key.json:/app/service-account-key.json:ro
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "nc", "-z", "localhost", "3000"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+  # 開発用（ローカルビルド）
+  google-sheets-mcp-dev:
+    build: .
+    ports:
+      - "3001:3000"
+    environment:
+      - GOOGLE_CREDENTIALS=${GOOGLE_CREDENTIALS}
+      - GOOGLE_CLOUD_PROJECT=${GOOGLE_CLOUD_PROJECT}
+      - GOOGLE_KEY_FILE=${GOOGLE_KEY_FILE}
+    volumes:
+      - ~/.config/gcloud:/root/.config/gcloud:ro
+    profiles:
+      - dev

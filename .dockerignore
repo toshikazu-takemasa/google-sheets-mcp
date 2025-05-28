@@ -1,0 +1,52 @@
+# Node modules
+node_modules
+npm-debug.log*
+
+# Build output
+dist
+
+# Development files
+.devcontainer
+.vscode
+*.log
+
+# Git
+.git
+.gitignore
+
+# Documentation
+README.md
+GOOGLE_CREDENTIALS_SETUP.md
+*.md
+
+# Docker files
+Dockerfile
+docker-compose.yml
+.dockerignore
+
+# Environment files
+.env
+.env.local
+.env.*.local
+
+# OS generated files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# IDE files
+.idea
+.vscode
+*.swp
+*.swo
+
+# Temporary files
+*.tmp
+*.temp
+
+# GitHub workflows (not needed in container)
+.github
