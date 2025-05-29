@@ -19,7 +19,7 @@ export class SheetsClient {
         'https://www.googleapis.com/auth/drive.readonly'
       ],
       credentials: process.env.GOOGLE_CREDENTIALS ? JSON.parse(process.env.GOOGLE_CREDENTIALS) : null,
-      keyFile: process.env.GOOGLE_KEY_FILE || null,
+      keyFile: process.env.GOOGLE_KEY_FILE || undefined,
       ...config
     };
   }
@@ -59,8 +59,8 @@ export class SheetsClient {
 
       const authClient = await auth.getClient();
       
-      this.sheets = google.sheets({ version: 'v4', auth: authClient });
-      this.drive = google.drive({ version: 'v3', auth: authClient });
+      this.sheets = google.sheets({ version: 'v4', auth: auth });
+      this.drive = google.drive({ version: 'v3', auth: auth });
       
       console.error("Google Sheets API initialized successfully");
     } catch (error) {
