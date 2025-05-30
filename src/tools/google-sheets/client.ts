@@ -28,15 +28,9 @@ export class SheetsClient {
     try {
       let auth: GoogleAuth;
       
-      // Google Cloud SDKの認証情報を優先的に使用
-      if (process.env.GOOGLE_CLOUD_PROJECT) {
-        console.error(`Using Google Cloud SDK authentication for project: ${process.env.GOOGLE_CLOUD_PROJECT}`);
-        auth = new GoogleAuth({
-          scopes: this.config.scopes,
-          projectId: process.env.GOOGLE_CLOUD_PROJECT,
-        });
-      } else if (this.config.credentials) {
-        // サービスアカウントキーを直接使用
+      // 認証方法の優先順位を明確化
+      if (this.config.credentials) {
+        // サービスアカウントキーを直接使用（最優先）
         console.error("Using service account credentials from environment variable");
         auth = new GoogleAuth({
           credentials: this.config.credentials,
@@ -49,22 +43,47 @@ export class SheetsClient {
           keyFile: this.config.keyFile,
           scopes: this.config.scopes,
         });
+      } else if (process.env.GOOGLE_APPLICATION_CREDENTIALS) {
+        // GOOGLE_APPLICATION_CREDENTIALS環境変数を使用
+        console.error(`Using GOOGLE_APPLICATION_CREDENTIALS: ${process.env.GOOGLE_APPLICATION_CREDENTIALS}`);
+        auth = new GoogleAuth({
+          keyFile: process.env.GOOGLE_APPLICATION_CREDENTIALS,
+          scopes: this.config.scopes,
+        });
+      } else if (process.env.GOOGLE_CLOUD_PROJECT) {
+        // Google Cloud SDKの認証情報を使用
+        console.error(`Using Google Cloud SDK authentication for project: ${process.env.GOOGLE_CLOUD_PROJECT}`);
+        auth = new GoogleAuth({
+          scopes: this.config.scopes,
+          projectId: process.env.GOOGLE_CLOUD_PROJECT,
+        });
       } else {
         // デフォルトの認証を使用
-        console.error("Using default Google Cloud authentication");
+        console.error("Using default Google Cloud authentication (ADC)");
         auth = new GoogleAuth({
           scopes: this.config.scopes,
         });
       }
 
+      // 認証クライアントを取得してテスト
       const authClient = await auth.getClient();
       
-      this.sheets = google.sheets({ version: 'v4', auth: auth });
-      this.drive = google.drive({ version: 'v3', auth: auth });
+      // 認証が正常に動作するかテスト
+      if (authClient) {
+        console.error("Authentication client created successfully");
+      }
+      
+      this.sheets = google.sheets({ version: 'v4', auth: authClient });
+      this.drive = google.drive({ version: 'v3', auth: authClient });
       
       console.error("Google Sheets API initialized successfully");
     } catch (error) {
       console.error("Failed to initialize Google Sheets API:", error);
+      console.error("Please check your authentication configuration:");
+      console.error("1. GOOGLE_CREDENTIALS environment variable with service account JSON");
+      console.error("2. GOOGLE_KEY_FILE environment variable with path to service account key file");
+      console.error("3. GOOGLE_APPLICATION_CREDENTIALS environment variable");
+      console.error("4. Google Cloud SDK authentication (gcloud auth application-default login)");
       throw error;
     }
   }
