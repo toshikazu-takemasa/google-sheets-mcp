@@ -6,7 +6,7 @@ import {
   CallToolRequestSchema,
   ListToolsRequestSchema,
 } from "@modelcontextprotocol/sdk/types.js";
-import { GoogleSheetsTools } from "./tools/google-sheets/index.js";
+import { handleListToolsRequest, handleCallToolRequest } from "./tools/google-sheets/index.js";
 
 // サーバーの初期化
 const server = new Server(
@@ -21,17 +21,14 @@ const server = new Server(
   }
 );
 
-// Google Sheetsツールのインスタンス
-const googleSheetsTools = new GoogleSheetsTools();
-
 // ツール一覧の取得
 server.setRequestHandler(ListToolsRequestSchema, async (request) => {
-  return await googleSheetsTools.handleListTools(request);
+  return await handleListToolsRequest(request);
 });
 
 // ツール実行の処理
 server.setRequestHandler(CallToolRequestSchema, async (request) => {
-  return await googleSheetsTools.handleCallTool(request);
+  return await handleCallToolRequest(request);
 });
 
 // サーバーの起動

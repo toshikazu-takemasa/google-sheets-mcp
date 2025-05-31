@@ -1,16 +1,15 @@
-import {
-  CallToolRequestSchema,
-  ListToolsRequestSchema,
-  ErrorCode,
-  McpError,
-} from "@modelcontextprotocol/sdk/types.js";
-import { TOOL_DEFINITIONS } from "./tool-definitions.js";
 import { SheetsClient } from "./client.js";
+import { ReadRangeParams, WriteRangeParams } from "./types.js";
+import { CallToolRequestSchema, ErrorCode, ListToolsRequestSchema, McpError } from "@modelcontextprotocol/sdk/types.js";
+import { TOOL_DEFINITIONS } from "./tool-definitions.js";
+import { AuthenticationManager } from "./auth-manager.js";
 
 export class GoogleSheetsTools {
   private sheetsClient: SheetsClient | null = null;
 
-  constructor(private readonly SheetsClientClass = SheetsClient) {}
+  constructor(
+    private readonly SheetsClientClass = SheetsClient,
+  ) {}
 
   private async getSheetsClient(): Promise<SheetsClient> {
     if (!this.sheetsClient) {
@@ -23,31 +22,44 @@ export class GoogleSheetsTools {
     if (error instanceof Error && error.message.includes("No refresh token found")) {
       throw new McpError(
         ErrorCode.InternalError,
-        "Google Sheets認証が必要です。認証情報を設定してください。"
+        "Google Sheets認証が必要です。google_sheets_auth_setupツールを実行してください。"
       );
     }
     throw error;
   }
 
-  async handleListTools(request: typeof ListToolsRequestSchema._type) {
-    return TOOL_DEFINITIONS;
-  }
-
   async handleCallTool(request: typeof CallToolRequestSchema._type) {
     try {
-      const client = await this.getSheetsClient();
-
       switch (request.params.name) {
-        case "get_spreadsheet_info": {
+        case "google_sheets_auth_setup": {
+          const authManager = new AuthenticationManager([
+            "https://www.googleapis.com/auth/spreadsheets",
+            "https://www.googleapis.com/auth/drive.file",
+          ]);
+          const result = await authManager.startAuthServer();
+          const response = {
+            content: [
+              {
+                type: "text",
+                text: result,
+              },
+            ],
+          };
+          return response;
+        }
+
+        case "sheets_list": {
           try {
-            const args = request.params.arguments as { spreadsheetId: string };
-            const info = await client.getSpreadsheetInfo(args.spreadsheetId);
-            
+            const client = await this.getSheetsClient();
+            const args = request.params.arguments as Record<string, unknown>;
+            const result = await client.listSheets({
+              spreadsheetId: args.doc_id as string,
+            });
             return {
               content: [
                 {
                   type: "text",
-                  text: `スプレッドシート情報:\n${JSON.stringify(info, null, 2)}`,
+                  text: JSON.stringify(result, null, 2),
                 },
               ],
             };
@@ -56,25 +68,22 @@ export class GoogleSheetsTools {
           }
         }
 
-        case "get_sheet_data": {
+        case "sheets_read_range": {
           try {
-            const args = request.params.arguments as {
-              spreadsheetId: string;
-              range: string;
-              valueRenderOption?: string;
+            const client = await this.getSheetsClient();
+            const args = request.params.arguments as Record<string, unknown>;
+            const params: ReadRangeParams = {
+              spreadsheetId: args.doc_id as string,
+              range: args.range as string,
+              sheetName: args.sheet_name as string | undefined,
+              rowLimit: args.row_limit as number | undefined,
             };
-            const values = await client.getSheetData(
-              args.spreadsheetId,
-              args.range,
-              args.valueRenderOption
-            );
-            const formattedData = client.formatSheetData(values);
-            
+            const result = await client.readRange(params);
             return {
               content: [
                 {
                   type: "text",
-                  text: `シートデータ (${args.range}):\n${formattedData}`,
+                  text: JSON.stringify(result, null, 2),
                 },
               ],
             };
@@ -83,26 +92,40 @@ export class GoogleSheetsTools {
           }
         }
 
-        case "update_sheet_data": {
+        case "sheets_write_range": {
           try {
-            const args = request.params.arguments as {
-              spreadsheetId: string;
-              range: string;
-              values: string[][];
-              valueInputOption?: string;
+            const client = await this.getSheetsClient();
+            const args = request.params.arguments as Record<string, unknown>;
+            const params: WriteRangeParams = {
+              spreadsheetId: args.doc_id as string,
+              startPosition: args.start_position as string | { row: number; col: number },
+              values: args.values as Array<Array<string | number | boolean>>,
+              sheetName: args.sheet_name as string | undefined,
             };
-            const response = await client.updateSheetData(
-              args.spreadsheetId,
-              args.range,
-              args.values,
-              args.valueInputOption
-            );
-            
+            await client.writeRange(params);
+            return {
+              content: [{ type: "text", text: "データの書き込みが完了しました" }],
+            };
+          } catch (error) {
+            return this.handleAuthError(error);
+          }
+        }
+
+        case "sheets_create_sheet": {
+          try {
+            const client = await this.getSheetsClient();
+            const args = request.params.arguments as Record<string, unknown>;
+            const result = await client.createSheet({
+              spreadsheetId: args.doc_id as string,
+              title: args.title as string,
+              rows: args.rows as number | undefined,
+              cols: args.cols as number | undefined,
+            });
             return {
               content: [
                 {
                   type: "text",
-                  text: `データを更新しました: ${args.range}\n更新されたセル数: ${response.updatedCells}`,
+                  text: `新しいシート「${result.title}」を作成しました。シートID: ${result.sheetId}`,
                 },
               ],
             };
@@ -111,122 +134,20 @@ export class GoogleSheetsTools {
           }
         }
 
-        case "append_sheet_data": {
+        case "sheets_create_spreadsheet": {
           try {
-            const args = request.params.arguments as {
-              spreadsheetId: string;
-              range: string;
-              values: string[][];
-              valueInputOption?: string;
-              insertDataOption?: string;
-            };
-            const response = await client.appendSheetData(
-              args.spreadsheetId,
-              args.range,
-              args.values,
-              args.valueInputOption,
-              args.insertDataOption
-            );
-            
+            const client = await this.getSheetsClient();
+            const args = request.params.arguments as Record<string, unknown>;
+            const spreadsheetId = await client.createSpreadsheet({
+              title: args.title as string,
+              folderId: args.folder_id as string | undefined,
+              sheets: args.sheets as Array<{ title: string; rows?: number; cols?: number }> | undefined,
+            });
             return {
               content: [
                 {
                   type: "text",
-                  text: `データを追加しました: ${args.range}\n更新されたセル数: ${response.updates?.updatedCells}`,
-                },
-              ],
-            };
-          } catch (error) {
-            return this.handleAuthError(error);
-          }
-        }
-
-        case "clear_sheet_data": {
-          try {
-            const args = request.params.arguments as {
-              spreadsheetId: string;
-              range: string;
-            };
-            await client.clearSheetData(args.spreadsheetId, args.range);
-            
-            return {
-              content: [
-                {
-                  type: "text",
-                  text: `データをクリアしました: ${args.range}`,
-                },
-              ],
-            };
-          } catch (error) {
-            return this.handleAuthError(error);
-          }
-        }
-
-        case "create_sheet": {
-          try {
-            const args = request.params.arguments as {
-              spreadsheetId: string;
-              title: string;
-              rowCount?: number;
-              columnCount?: number;
-            };
-            const newSheet = await client.createSheet(
-              args.spreadsheetId,
-              args.title,
-              args.rowCount,
-              args.columnCount
-            );
-            
-            return {
-              content: [
-                {
-                  type: "text",
-                  text: `新しいシートを作成しました: ${args.title}\nシートID: ${newSheet?.properties?.sheetId}`,
-                },
-              ],
-            };
-          } catch (error) {
-            return this.handleAuthError(error);
-          }
-        }
-
-        case "delete_sheet": {
-          try {
-            const args = request.params.arguments as {
-              spreadsheetId: string;
-              sheetId: number;
-            };
-            await client.deleteSheet(args.spreadsheetId, args.sheetId);
-            
-            return {
-              content: [
-                {
-                  type: "text",
-                  text: `シートを削除しました: シートID ${args.sheetId}`,
-                },
-              ],
-            };
-          } catch (error) {
-            return this.handleAuthError(error);
-          }
-        }
-
-        case "search_spreadsheets": {
-          try {
-            const args = request.params.arguments as {
-              query: string;
-              maxResults?: number;
-            };
-            const results = await client.searchSpreadsheets(
-              args.query,
-              args.maxResults
-            );
-            
-            return {
-              content: [
-                {
-                  type: "text",
-                  text: `検索結果 (${args.query}):\n${JSON.stringify(results, null, 2)}`,
+                  text: `スプレッドシートを作成しました: https://docs.google.com/spreadsheets/d/${spreadsheetId}`,
                 },
               ],
             };
@@ -236,21 +157,45 @@ export class GoogleSheetsTools {
         }
 
         default:
-          throw new McpError(ErrorCode.MethodNotFound, `不明なツール: ${request.params.name}`);
+          throw new McpError(ErrorCode.MethodNotFound, `Unknown tool: ${request.params.name}`);
       }
     } catch (error) {
       if (error instanceof McpError) {
         throw error;
       }
-      const errorMessage = error instanceof Error ? error.message : String(error);
-      return {
-        content: [
-          {
-            type: "text",
-            text: `エラー: ${errorMessage}`,
-          },
-        ],
-      };
+      this.handleAuthError(error);
     }
   }
 }
+
+// シングルトンインスタンスを管理
+let tools: GoogleSheetsTools | null = null;
+
+// ツール一覧を返す関数（認証不要）
+export async function handleListTools() {
+  return TOOL_DEFINITIONS;
+}
+
+export function handleListToolsRequest(request: typeof ListToolsRequestSchema._type) {
+  return handleListTools();
+}
+
+// 認証が必要な操作を行う関数
+export async function handleCallTool(request: typeof CallToolRequestSchema._type) {
+  if (!tools) {
+    tools = new GoogleSheetsTools();
+  }
+  return tools.handleCallTool(request);
+}
+
+export function handleCallToolRequest(request: typeof CallToolRequestSchema._type) {
+  return handleCallTool(request);
+}
+
+// ツール定義をエクスポート（テスト用）
+export { TOOL_DEFINITIONS } from "./tool-definitions.js";
+
+// 後方互換性のためのエクスポート
+export { SheetsClient } from "./client.js";
+export * from "./types.js";
+export * from "./utils.js";

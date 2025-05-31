@@ -1,196 +1,164 @@
-import { Tool } from "@modelcontextprotocol/sdk/types.js";
-
-export const TOOL_DEFINITIONS: { tools: Tool[] } = {
+// ツール定義を分離（認証不要な部分）
+export const TOOL_DEFINITIONS = {
   tools: [
     {
-      name: "get_spreadsheet_info",
-      description: "スプレッドシートの基本情報を取得します",
+      name: "google_sheets_auth_setup",
+      description: "Google Sheets認証のセットアップを行います。認証エラーが発生した場合に実行してください。",
+      inputSchema: {
+        type: "object",
+        properties: {}
+      }
+    },
+    {
+      name: "sheets_list",
+      description: "スプレッドシート内の全シート情報を取得",
       inputSchema: {
         type: "object",
         properties: {
-          spreadsheetId: {
+          doc_id: {
             type: "string",
             description: "スプレッドシートのID",
           },
         },
-        required: ["spreadsheetId"],
+        required: ["doc_id"],
       },
     },
     {
-      name: "get_sheet_data",
-      description: "指定したシートのデータを取得します",
+      name: "sheets_read_range",
+      description: "スプレッドシートの指定範囲のデータを読み取り",
       inputSchema: {
         type: "object",
         properties: {
-          spreadsheetId: {
+          doc_id: {
             type: "string",
             description: "スプレッドシートのID",
           },
+          sheet_name: {
+            type: "string",
+            description: "シート名（オプション）",
+          },
           range: {
             type: "string",
-            description: "取得する範囲（例: 'Sheet1!A1:C10' または 'Sheet1'）",
+            description: "読み取り範囲（例：A1:D10）",
           },
-          valueRenderOption: {
-            type: "string",
-            description: "値の表示形式（FORMATTED_VALUE, UNFORMATTED_VALUE, FORMULA）",
-            default: "FORMATTED_VALUE",
+          row_limit: {
+            type: "number",
+            description: "取得する最大行数",
+            default: 100,
+            maximum: 1000,
           },
         },
-        required: ["spreadsheetId", "range"],
+        required: ["doc_id", "range"],
       },
     },
     {
-      name: "update_sheet_data",
-      description: "指定したシートのデータを更新します",
+      name: "sheets_write_range",
+      description: "スプレッドシートの指定位置にデータを書き込み",
       inputSchema: {
         type: "object",
         properties: {
-          spreadsheetId: {
+          doc_id: {
             type: "string",
             description: "スプレッドシートのID",
           },
-          range: {
+          sheet_name: {
             type: "string",
-            description: "更新する範囲（例: 'Sheet1!A1:C3'）",
+            description: "シート名（オプション）",
+          },
+          start_position: {
+            oneOf: [
+              {
+                type: "string",
+                description: "書き込み開始位置（A1形式、例：A1）",
+              },
+              {
+                type: "object",
+                properties: {
+                  row: {
+                    type: "number",
+                    description: "開始行（0始まり）",
+                  },
+                  col: {
+                    type: "number",
+                    description: "開始列（0始まり）",
+                  },
+                },
+                required: ["row", "col"],
+              },
+            ],
           },
           values: {
             type: "array",
-            description: "更新するデータ（2次元配列）",
             items: {
               type: "array",
               items: {
-                type: "string"
-              }
-            }
-          },
-          valueInputOption: {
-            type: "string",
-            description: "入力値の解釈方法（RAW, USER_ENTERED）",
-            default: "USER_ENTERED",
+                oneOf: [{ type: "string" }, { type: "number" }, { type: "boolean" }],
+              },
+            },
+            description: "書き込むデータ（2次元配列）",
           },
         },
-        required: ["spreadsheetId", "range", "values"],
+        required: ["doc_id", "start_position", "values"],
       },
     },
     {
-      name: "append_sheet_data",
-      description: "シートにデータを追加します",
+      name: "sheets_create_sheet",
+      description: "既存のスプレッドシートに新しいシートを作成",
       inputSchema: {
         type: "object",
         properties: {
-          spreadsheetId: {
-            type: "string",
-            description: "スプレッドシートのID",
-          },
-          range: {
-            type: "string",
-            description: "追加する範囲（例: 'Sheet1!A:C'）",
-          },
-          values: {
-            type: "array",
-            description: "追加するデータ（2次元配列）",
-            items: {
-              type: "array",
-              items: {
-                type: "string"
-              }
-            }
-          },
-          valueInputOption: {
-            type: "string",
-            description: "入力値の解釈方法（RAW, USER_ENTERED）",
-            default: "USER_ENTERED",
-          },
-          insertDataOption: {
-            type: "string",
-            description: "データの挿入方法（OVERWRITE, INSERT_ROWS）",
-            default: "INSERT_ROWS",
-          },
-        },
-        required: ["spreadsheetId", "range", "values"],
-      },
-    },
-    {
-      name: "clear_sheet_data",
-      description: "指定した範囲のデータをクリアします",
-      inputSchema: {
-        type: "object",
-        properties: {
-          spreadsheetId: {
-            type: "string",
-            description: "スプレッドシートのID",
-          },
-          range: {
-            type: "string",
-            description: "クリアする範囲（例: 'Sheet1!A1:C10'）",
-          },
-        },
-        required: ["spreadsheetId", "range"],
-      },
-    },
-    {
-      name: "create_sheet",
-      description: "新しいシートを作成します",
-      inputSchema: {
-        type: "object",
-        properties: {
-          spreadsheetId: {
+          doc_id: {
             type: "string",
             description: "スプレッドシートのID",
           },
           title: {
             type: "string",
-            description: "新しいシートのタイトル",
+            description: "新しいシートの名前",
           },
-          rowCount: {
+          rows: {
             type: "number",
-            description: "行数（デフォルト: 1000）",
+            description: "行数（オプション、デフォルト: 1000）",
             default: 1000,
           },
-          columnCount: {
+          cols: {
             type: "number",
-            description: "列数（デフォルト: 26）",
+            description: "列数（オプション、デフォルト: 26）",
             default: 26,
           },
         },
-        required: ["spreadsheetId", "title"],
+        required: ["doc_id", "title"],
       },
     },
     {
-      name: "delete_sheet",
-      description: "シートを削除します",
+      name: "sheets_create_spreadsheet",
+      description: "新規スプレッドシートを作成",
       inputSchema: {
         type: "object",
         properties: {
-          spreadsheetId: {
+          title: {
             type: "string",
-            description: "スプレッドシートのID",
+            description: "スプレッドシートのタイトル",
           },
-          sheetId: {
-            type: "number",
-            description: "削除するシートのID",
+          folder_id: {
+            type: "string",
+            description:
+              "作成先フォルダのID（オプション、GOOGLE_DRIVE_DEFAULT_FOLDER_IDが設定されている場合はそちらが使用されます）",
+          },
+          sheets: {
+            type: "array",
+            description: "作成するシートの設定（オプション、指定しない場合は'Sheet1'という名前のシートが作成されます）",
+            items: {
+              type: "object",
+              properties: {
+                title: { type: "string", description: "シート名" },
+                rows: { type: "number", description: "行数（オプション）" },
+                cols: { type: "number", description: "列数（オプション）" },
+              },
+              required: ["title"],
+            },
           },
         },
-        required: ["spreadsheetId", "sheetId"],
-      },
-    },
-    {
-      name: "search_spreadsheets",
-      description: "Google Driveでスプレッドシートを検索します",
-      inputSchema: {
-        type: "object",
-        properties: {
-          query: {
-            type: "string",
-            description: "検索クエリ（ファイル名など）",
-          },
-          maxResults: {
-            type: "number",
-            description: "最大結果数（デフォルト: 10）",
-            default: 10,
-          },
-        },
-        required: ["query"],
+        required: ["title"],
       },
     },
   ],

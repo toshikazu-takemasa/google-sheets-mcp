@@ -1,97 +1,362 @@
 import { google } from "googleapis";
-import { GoogleAuth } from "google-auth-library";
-
-export interface SheetsClientConfig {
-  credentials?: any;
-  keyFile?: string;
-  scopes?: string[];
-}
+import type { sheets_v4, drive_v3 } from "googleapis";
+import {
+  CellValue,
+  CreateSheetParams,
+  CreateSpreadsheetParams,
+  ExpandSheetParams,
+  ERROR_MESSAGES,
+  LIMITS,
+  ListSheetsParams,
+  ReadRangeParams,
+  SheetInfo,
+  WriteRangeParams,
+} from "./types.js";
+import { toA1Notation, calculateEndPosition, generateRange } from "./utils.js";
+import { AuthenticationManager } from "./auth-manager.js";
 
 export class SheetsClient {
-  private sheets: any = null;
-  private drive: any = null;
-  private config: SheetsClientConfig;
+  private sheets: sheets_v4.Sheets;
+  private drive: drive_v3.Drive;
+  private defaultFolderId: string | undefined;
+  private authManager: AuthenticationManager;
 
-  constructor(config?: SheetsClientConfig) {
-    this.config = {
-      scopes: [
-        'https://www.googleapis.com/auth/spreadsheets',
-        'https://www.googleapis.com/auth/drive.readonly'
-      ],
-      credentials: process.env.GOOGLE_CREDENTIALS ? JSON.parse(process.env.GOOGLE_CREDENTIALS) : null,
-      keyFile: process.env.GOOGLE_KEY_FILE || undefined,
-      ...config
-    };
+  constructor() {
+    this.authManager = new AuthenticationManager([
+      "https://www.googleapis.com/auth/spreadsheets",
+      "https://www.googleapis.com/auth/drive.file",
+    ]);
+    const oauth2Client = this.authManager.getOAuth2Client();
+    this.sheets = google.sheets({ version: "v4", auth: oauth2Client });
+    this.drive = google.drive({ version: "v3", auth: oauth2Client });
+    this.defaultFolderId = process.env.GOOGLE_DRIVE_DEFAULT_FOLDER_ID;
   }
 
-  async initialize(): Promise<void> {
+  /**
+   * 認証を初期化
+   */
+  async authenticate(): Promise<void> {
+    await this.authManager.setupAuth();
+  }
+
+  /**
+   * スプレッドシート内の全シート情報を取得
+   */
+  async listSheets(params: ListSheetsParams): Promise<SheetInfo[]> {
+    await this.authManager.setupAuth();
     try {
-      let auth: GoogleAuth;
-      
-      // 認証方法の優先順位を明確化
-      if (this.config.credentials) {
-        // サービスアカウントキーを直接使用（最優先）
-        console.error("Using service account credentials from environment variable");
-        auth = new GoogleAuth({
-          credentials: this.config.credentials,
-          scopes: this.config.scopes,
-        });
-      } else if (this.config.keyFile) {
-        // キーファイルを使用
-        console.error(`Using service account key file: ${this.config.keyFile}`);
-        auth = new GoogleAuth({
-          keyFile: this.config.keyFile,
-          scopes: this.config.scopes,
-        });
-      } else if (process.env.GOOGLE_APPLICATION_CREDENTIALS) {
-        // GOOGLE_APPLICATION_CREDENTIALS環境変数を使用
-        console.error(`Using GOOGLE_APPLICATION_CREDENTIALS: ${process.env.GOOGLE_APPLICATION_CREDENTIALS}`);
-        auth = new GoogleAuth({
-          keyFile: process.env.GOOGLE_APPLICATION_CREDENTIALS,
-          scopes: this.config.scopes,
-        });
-      } else if (process.env.GOOGLE_CLOUD_PROJECT) {
-        // Google Cloud SDKの認証情報を使用
-        console.error(`Using Google Cloud SDK authentication for project: ${process.env.GOOGLE_CLOUD_PROJECT}`);
-        auth = new GoogleAuth({
-          scopes: this.config.scopes,
-          projectId: process.env.GOOGLE_CLOUD_PROJECT,
-        });
-      } else {
-        // デフォルトの認証を使用
-        console.error("Using default Google Cloud authentication (ADC)");
-        auth = new GoogleAuth({
-          scopes: this.config.scopes,
-        });
+      const response = await this.sheets.spreadsheets.get({
+        spreadsheetId: params.spreadsheetId,
+        fields: "sheets.properties",
+      });
+
+      if (!response.data.sheets) {
+        return [];
       }
 
-      // 認証クライアントを取得してテスト
-      const authClient = await auth.getClient();
-      
-      // 認証が正常に動作するかテスト
-      if (authClient) {
-        console.error("Authentication client created successfully");
-      }
-      
-      this.sheets = google.sheets({ version: 'v4', auth: authClient });
-      this.drive = google.drive({ version: 'v3', auth: authClient });
-      
-      console.error("Google Sheets API initialized successfully");
+      return response.data.sheets.map((sheet) => {
+        const properties = sheet.properties;
+        if (!properties) {
+          throw new Error("シートのプロパティが取得できません");
+        }
+        return {
+          title: properties.title || "",
+          sheetId: properties.sheetId || 0,
+          rowCount: properties.gridProperties?.rowCount || 0,
+          columnCount: properties.gridProperties?.columnCount || 0,
+          index: properties.index || 0,
+        };
+      });
     } catch (error) {
-      console.error("Failed to initialize Google Sheets API:", error);
-      console.error("Please check your authentication configuration:");
-      console.error("1. GOOGLE_CREDENTIALS environment variable with service account JSON");
-      console.error("2. GOOGLE_KEY_FILE environment variable with path to service account key file");
-      console.error("3. GOOGLE_APPLICATION_CREDENTIALS environment variable");
-      console.error("4. Google Cloud SDK authentication (gcloud auth application-default login)");
+      if (this.isNotFoundError(error)) {
+        throw new Error(ERROR_MESSAGES.SPREADSHEET_NOT_FOUND(params.spreadsheetId));
+      }
+      if (this.isPermissionError(error)) {
+        throw new Error(ERROR_MESSAGES.PERMISSION_DENIED);
+      }
       throw error;
     }
   }
 
-  private async ensureInitialized(): Promise<void> {
-    if (!this.sheets || !this.drive) {
-      await this.initialize();
+  /**
+   * 指定範囲のデータを読み取り
+   */
+  async readRange(params: ReadRangeParams): Promise<CellValue[][]> {
+    await this.authManager.setupAuth();
+    const rowLimit = params.rowLimit || LIMITS.DEFAULT_ROW_LIMIT;
+    if (rowLimit > LIMITS.MAX_ROW_LIMIT) {
+      throw new Error(ERROR_MESSAGES.ROW_LIMIT_EXCEEDED(LIMITS.MAX_ROW_LIMIT));
     }
+
+    try {
+      const range = params.sheetName ? `${params.sheetName}!${params.range}` : params.range;
+
+      const response = await this.sheets.spreadsheets.values.get({
+        spreadsheetId: params.spreadsheetId,
+        range,
+        majorDimension: "ROWS",
+        valueRenderOption: "UNFORMATTED_VALUE",
+      });
+
+      if (!response.data.values) {
+        return [];
+      }
+
+      // 行数制限を適用
+      const values = response.data.values.slice(0, rowLimit);
+
+      // 値の型を適切に変換
+      return values.map((row: unknown[]) => row.map((cell: unknown) => this.convertCellValue(cell)));
+    } catch (error) {
+      if (this.isNotFoundError(error)) {
+        throw new Error(ERROR_MESSAGES.SPREADSHEET_NOT_FOUND(params.spreadsheetId));
+      }
+      if (this.isPermissionError(error)) {
+        throw new Error(ERROR_MESSAGES.PERMISSION_DENIED);
+      }
+      throw error;
+    }
+  }
+
+  /**
+   * 指定位置にデータを書き込み
+   */
+  async writeRange(params: WriteRangeParams): Promise<void> {
+    await this.authManager.setupAuth();
+    try {
+      // シート情報を取得
+      const sheets = await this.listSheets({ spreadsheetId: params.spreadsheetId });
+      const targetSheet = params.sheetName ? sheets.find((s) => s.title === params.sheetName) : sheets[0];
+
+      if (!targetSheet) {
+        throw new Error(ERROR_MESSAGES.SHEET_NOT_FOUND(params.sheetName || "最初のシート"));
+      }
+
+      // 書き込み範囲を計算
+      const startA1 = toA1Notation(params.startPosition);
+      const endA1 = calculateEndPosition(params.startPosition, params.values);
+      const range = params.sheetName
+        ? `${params.sheetName}!${generateRange(startA1, endA1)}`
+        : generateRange(startA1, endA1);
+
+      // 必要に応じてシートを拡張
+      await this.expandSheetIfNeeded({
+        spreadsheetId: params.spreadsheetId,
+        sheetId: targetSheet.sheetId,
+        requiredRows: params.values.length,
+        requiredCols: params.values[0].length,
+      });
+
+      // データを書き込み
+      await this.sheets.spreadsheets.values.update({
+        spreadsheetId: params.spreadsheetId,
+        range,
+        valueInputOption: "RAW",
+        requestBody: {
+          values: params.values,
+        },
+      });
+    } catch (error) {
+      if (this.isNotFoundError(error)) {
+        throw new Error(ERROR_MESSAGES.SPREADSHEET_NOT_FOUND(params.spreadsheetId));
+      }
+      if (this.isPermissionError(error)) {
+        throw new Error(ERROR_MESSAGES.PERMISSION_DENIED);
+      }
+      throw error;
+    }
+  }
+
+  /**
+   * 新規シートを作成
+   */
+  async createSheet(params: CreateSheetParams): Promise<SheetInfo> {
+    await this.authManager.setupAuth();
+    try {
+      const response = await this.sheets.spreadsheets.batchUpdate({
+        spreadsheetId: params.spreadsheetId,
+        requestBody: {
+          requests: [
+            {
+              addSheet: {
+                properties: {
+                  title: params.title,
+                  gridProperties: {
+                    rowCount: params.rows || LIMITS.DEFAULT_NEW_SHEET_ROWS,
+                    columnCount: params.cols || LIMITS.DEFAULT_NEW_SHEET_COLS,
+                  },
+                },
+              },
+            },
+          ],
+        },
+      });
+
+      const addedSheet = response.data.replies?.[0].addSheet?.properties;
+      if (!addedSheet) {
+        throw new Error("シートの作成に失敗しました");
+      }
+
+      return {
+        title: addedSheet.title || "",
+        sheetId: addedSheet.sheetId || 0,
+        rowCount: addedSheet.gridProperties?.rowCount || 0,
+        columnCount: addedSheet.gridProperties?.columnCount || 0,
+        index: addedSheet.index || 0,
+      };
+    } catch (error) {
+      if (this.isNotFoundError(error)) {
+        throw new Error(ERROR_MESSAGES.SPREADSHEET_NOT_FOUND(params.spreadsheetId));
+      }
+      if (this.isPermissionError(error)) {
+        throw new Error(ERROR_MESSAGES.PERMISSION_DENIED);
+      }
+      throw error;
+    }
+  }
+
+  /**
+   * 新規スプレッドシートを作成
+   */
+  async createSpreadsheet(params: CreateSpreadsheetParams): Promise<string> {
+    await this.authManager.setupAuth();
+    try {
+      // スプレッドシートを作成
+      const response = await this.sheets.spreadsheets.create({
+        requestBody: {
+          properties: {
+            title: params.title,
+          },
+          sheets: (params.sheets || [{ title: "Sheet1" }]).map((sheet) => ({
+            properties: {
+              title: sheet.title,
+              gridProperties: {
+                rowCount: sheet.rows || LIMITS.DEFAULT_NEW_SHEET_ROWS,
+                columnCount: sheet.cols || LIMITS.DEFAULT_NEW_SHEET_COLS,
+              },
+            },
+          })),
+        },
+      });
+
+      const spreadsheetId = response.data.spreadsheetId;
+      if (!spreadsheetId) {
+        throw new Error("スプレッドシートの作成に失敗しました");
+      }
+
+      // パラメータで指定されたフォルダID、または環境変数のデフォルトフォルダID
+      const targetFolderId = params.folderId || this.defaultFolderId;
+      if (targetFolderId) {
+        try {
+          await this.drive.files.update({
+            fileId: spreadsheetId,
+            addParents: targetFolderId,
+            removeParents: "root",
+            supportsTeamDrives: true,
+            fields: "id, parents",
+          });
+        } catch (error) {
+          if (this.isNotFoundError(error)) {
+            throw new Error(ERROR_MESSAGES.FOLDER_NOT_FOUND(targetFolderId));
+          }
+          throw error;
+        }
+      }
+
+      return spreadsheetId;
+    } catch (error) {
+      if (this.isPermissionError(error)) {
+        throw new Error(ERROR_MESSAGES.PERMISSION_DENIED);
+      }
+      throw error;
+    }
+  }
+
+  /**
+   * 必要に応じてシートを拡張
+   */
+  private async expandSheetIfNeeded(params: ExpandSheetParams): Promise<void> {
+    await this.authManager.setupAuth();
+    if (params.requiredRows > LIMITS.MAX_SHEET_ROWS || params.requiredCols > LIMITS.MAX_SHEET_COLS) {
+      throw new Error(ERROR_MESSAGES.SHEET_SIZE_LIMIT(LIMITS.MAX_SHEET_ROWS, LIMITS.MAX_SHEET_COLS));
+    }
+
+    try {
+      const response = await this.sheets.spreadsheets.get({
+        spreadsheetId: params.spreadsheetId,
+        ranges: [],
+        fields: "sheets.properties",
+      });
+
+      const sheet = response.data.sheets?.find((s) => s.properties?.sheetId === params.sheetId);
+
+      if (!sheet || !sheet.properties?.gridProperties) {
+        return;
+      }
+
+      const currentRows = sheet.properties.gridProperties.rowCount || 0;
+      const currentCols = sheet.properties.gridProperties.columnCount || 0;
+      const needsUpdate = params.requiredRows > currentRows || params.requiredCols > currentCols;
+
+      if (needsUpdate) {
+        await this.sheets.spreadsheets.batchUpdate({
+          spreadsheetId: params.spreadsheetId,
+          requestBody: {
+            requests: [
+              {
+                updateSheetProperties: {
+                  properties: {
+                    sheetId: params.sheetId,
+                    gridProperties: {
+                      rowCount: Math.max(currentRows, params.requiredRows),
+                      columnCount: Math.max(currentCols, params.requiredCols),
+                    },
+                  },
+                  fields: "gridProperties.rowCount,gridProperties.columnCount",
+                },
+              },
+            ],
+          },
+        });
+      }
+    } catch (error) {
+      if (this.isNotFoundError(error)) {
+        throw new Error(ERROR_MESSAGES.SPREADSHEET_NOT_FOUND(params.spreadsheetId));
+      }
+      if (this.isPermissionError(error)) {
+        throw new Error(ERROR_MESSAGES.PERMISSION_DENIED);
+      }
+      throw error;
+    }
+  }
+
+  /**
+   * APIレスポンスの値をCellValue型に変換
+   */
+  private convertCellValue(value: unknown): CellValue {
+    if (typeof value === "string") return value;
+    if (typeof value === "number") return value;
+    if (typeof value === "boolean") return value;
+    return String(value);
+  }
+
+  /**
+   * NotFoundエラーかどうかを判定
+   */
+  private isNotFoundError(error: unknown): boolean {
+    return (error as any)?.response?.status === 404;
+  }
+
+  /**
+   * 権限エラーかどうかを判定
+   */
+  private isPermissionError(error: unknown): boolean {
+    return (error as any)?.response?.status === 403;
+  }
+
+  // 後方互換性のためのメソッド
+  async initialize(): Promise<void> {
+    await this.authenticate();
   }
 
   parseSpreadsheetId(input: string): string {
@@ -113,142 +378,36 @@ export class SheetsClient {
   }
 
   async getSpreadsheetInfo(spreadsheetId: string): Promise<any> {
-    await this.ensureInitialized();
     const id = this.parseSpreadsheetId(spreadsheetId);
+    const sheets = await this.listSheets({ spreadsheetId: id });
     
-    const response = await this.sheets.spreadsheets.get({
-      spreadsheetId: id,
-    });
-    
-    const spreadsheet = response.data;
     return {
-      title: spreadsheet.properties?.title,
-      spreadsheetId: spreadsheet.spreadsheetId,
-      sheets: spreadsheet.sheets?.map((sheet: any) => ({
-        title: sheet.properties?.title,
-        sheetId: sheet.properties?.sheetId,
-        rowCount: sheet.properties?.gridProperties?.rowCount,
-        columnCount: sheet.properties?.gridProperties?.columnCount,
+      title: "スプレッドシート", // 実際のタイトルを取得する場合は別途APIコールが必要
+      spreadsheetId: id,
+      sheets: sheets.map(sheet => ({
+        title: sheet.title,
+        sheetId: sheet.sheetId,
+        rowCount: sheet.rowCount,
+        columnCount: sheet.columnCount,
       })),
     };
   }
 
   async getSheetData(spreadsheetId: string, range: string, valueRenderOption: string = 'FORMATTED_VALUE'): Promise<any> {
-    await this.ensureInitialized();
     const id = this.parseSpreadsheetId(spreadsheetId);
-    
-    const response = await this.sheets.spreadsheets.values.get({
+    return await this.readRange({
       spreadsheetId: id,
       range: range,
-      valueRenderOption: valueRenderOption,
     });
-    
-    return response.data.values;
   }
 
   async updateSheetData(spreadsheetId: string, range: string, values: string[][], valueInputOption: string = 'USER_ENTERED'): Promise<any> {
-    await this.ensureInitialized();
     const id = this.parseSpreadsheetId(spreadsheetId);
-    
-    const response = await this.sheets.spreadsheets.values.update({
+    await this.writeRange({
       spreadsheetId: id,
-      range: range,
-      valueInputOption: valueInputOption,
-      requestBody: {
-        values: values,
-      },
+      startPosition: range.split(':')[0] || 'A1',
+      values: values,
     });
-    
-    return response.data;
-  }
-
-  async appendSheetData(spreadsheetId: string, range: string, values: string[][], valueInputOption: string = 'USER_ENTERED', insertDataOption: string = 'INSERT_ROWS'): Promise<any> {
-    await this.ensureInitialized();
-    const id = this.parseSpreadsheetId(spreadsheetId);
-    
-    const response = await this.sheets.spreadsheets.values.append({
-      spreadsheetId: id,
-      range: range,
-      valueInputOption: valueInputOption,
-      insertDataOption: insertDataOption,
-      requestBody: {
-        values: values,
-      },
-    });
-    
-    return response.data;
-  }
-
-  async clearSheetData(spreadsheetId: string, range: string): Promise<void> {
-    await this.ensureInitialized();
-    const id = this.parseSpreadsheetId(spreadsheetId);
-    
-    await this.sheets.spreadsheets.values.clear({
-      spreadsheetId: id,
-      range: range,
-    });
-  }
-
-  async createSheet(spreadsheetId: string, title: string, rowCount: number = 1000, columnCount: number = 26): Promise<any> {
-    await this.ensureInitialized();
-    const id = this.parseSpreadsheetId(spreadsheetId);
-    
-    const response = await this.sheets.spreadsheets.batchUpdate({
-      spreadsheetId: id,
-      requestBody: {
-        requests: [
-          {
-            addSheet: {
-              properties: {
-                title: title,
-                gridProperties: {
-                  rowCount: rowCount,
-                  columnCount: columnCount,
-                },
-              },
-            },
-          },
-        ],
-      },
-    });
-    
-    return response.data.replies?.[0]?.addSheet;
-  }
-
-  async deleteSheet(spreadsheetId: string, sheetId: number): Promise<void> {
-    await this.ensureInitialized();
-    const id = this.parseSpreadsheetId(spreadsheetId);
-    
-    await this.sheets.spreadsheets.batchUpdate({
-      spreadsheetId: id,
-      requestBody: {
-        requests: [
-          {
-            deleteSheet: {
-              sheetId: sheetId,
-            },
-          },
-        ],
-      },
-    });
-  }
-
-  async searchSpreadsheets(query: string, maxResults: number = 10): Promise<any[]> {
-    await this.ensureInitialized();
-    
-    const response = await this.drive.files.list({
-      q: `mimeType='application/vnd.google-apps.spreadsheet' and name contains '${query}'`,
-      pageSize: maxResults,
-      fields: 'files(id, name, createdTime, modifiedTime, webViewLink)',
-    });
-    
-    const files = response.data.files || [];
-    return files.map((file: any) => ({
-      id: file.id,
-      name: file.name,
-      createdTime: file.createdTime,
-      modifiedTime: file.modifiedTime,
-      webViewLink: file.webViewLink,
-    }));
+    return { updatedCells: values.length * values[0]?.length || 0 };
   }
 }
